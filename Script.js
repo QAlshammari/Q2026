@@ -502,11 +502,8 @@ function calculateStats(data){
   const grossWin = wins.reduce((s,t)=>s+t.profit,0);
   const grossLoss = negativeTrades.reduce((s,t)=>s+t.profit,0);
   const net = closed.reduce((s,t)=>s+t.profit,0);
-  // نسبة العائد (المعادلة 1): مجموع نسب عوائد الصفقات المغلقة.
-  // لا تعتمد على إجمالي تكلفة الصفقات، لذلك إضافة صفقة رابحة لا تسحب
-  // النسبة إلى الأسفل بسبب زيادة المقام.
   const totalCost = closed.reduce((s,t)=>s+(Math.abs(t.buy)*100),0);
-  const returnP = closed.reduce((s,t)=>s + (Number(t.pct) || 0), 0);
+  const returnP = totalCost ? net/totalCost*100 : 0;
   const winRate = counted.length ? wins.length/counted.length*100 : 0;
   const avgWin = wins.length ? grossWin/wins.length : 0;
   const avgLoss = negativeTrades.length ? grossLoss/negativeTrades.length : 0;
