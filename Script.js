@@ -11,6 +11,7 @@ const SAVED_RANGE_KEY = 'qOptionsSelectedReportRange';
 const MANUAL_WEEKS_KEY = 'qOptionsManualTradesByWeekV1';
 const EXCEL_RANGES_KEY = 'qOptionsExcelTradesByRangeV1';
 const MANUAL_DRAFTS_KEY = 'qOptionsManualDraftsByWeekV1';
+const REPORT_CHECKPOINTS_KEY = 'qOptionsReportCheckpointsV1';
 const MANUAL_PAGE_OPEN_KEY = 'qOptionsManualPageOpenV1';
 const FIREBASE_CONFIG = {
   apiKey:'AIzaSyBxX734w0Az7nww2TyfQ2TNwM6Sk0U8pcU',
@@ -28,17 +29,19 @@ let applyingCloudState=false;
 let cloudSaveTimer=null;
 
 function writeManualWeeks(weeks,{sync=true}={}){
+  if(sync && !applyingCloudState) createReportCheckpoint();
   localStorage.setItem(MANUAL_WEEKS_KEY,JSON.stringify(weeks||{}));
   if(sync) scheduleCloudSave();
 }
 
 function writeExcelRanges(ranges,{sync=true}={}){
+  if(sync && !applyingCloudState) createReportCheckpoint();
   localStorage.setItem(EXCEL_RANGES_KEY,JSON.stringify(ranges||{}));
   if(sync) scheduleCloudSave();
 }
 
 function sharedCloudPayload(){
-  return {initialized:true,manualWeeks:readManualWeeks(),excelRanges:readExcelRanges(),updatedAt:Date.now()};
+  return {initialized:true,manualWeeks:readManualWeeks(),excelRanges:readExcelRanges(),checkpoints:readReportCheckpoints(),updatedAt:Date.now()};
 }
 
 function scheduleCloudSave(){
@@ -67,6 +70,7 @@ function applyCloudStores(data){
   applyingCloudState=true;
   writeManualWeeks(data?.manualWeeks||{},{sync:false});
   writeExcelRanges(data?.excelRanges||{},{sync:false});
+  if(Array.isArray(data?.checkpoints)) localStorage.setItem(REPORT_CHECKPOINTS_KEY,JSON.stringify(data.checkpoints));
   applyingCloudState=false;
   activeManualWeekKey=selectedWeekKey();
   manualTrades=readManualWeeks()[activeManualWeekKey]||[];
@@ -107,6 +111,67 @@ async function initSharedCloud(){
     showToast('تعذر الاتصال بقاعدة الصفقات المشتركة');
   }
 }
+
+function readReportCheckpoints(){
+  try{return JSON.parse(localStorage.getItem(REPORT_CHECKPOINTS_KEY)||'[]')||[]}catch(_e){return []}
+}
+function createReportCheckpoint(){
+  try{
+    const manualWeeks=readManualWeeks(),excelRanges=readExcelRanges();
+    const state=JSON.stringify({manualWeeks,excelRanges});
+    const checkpoints=readReportCheckpoints();
+    if(checkpoints[0]?.state===state)return;
+    checkpoints.unshift({id:`${Date.now()}-${Math.random().toString(36).slice(2,7)}`,createdAt:Date.now(),state,manualWeeks,excelRanges});
+    localStorage.setItem(REPORT_CHECKPOINTS_KEY,JSON.stringify(checkpoints.slice(0,40)));
+  }catch(err){console.warn('Could not save report checkpoint',err)}
+}
+function restoreReportCheckpoint(id){
+  const checkpoint=readReportCheckpoints().find(item=>item.id===id);if(!checkpoint)return;
+  if(!confirm('استعادة هذه النقطة؟ ستُستبدل الصفقات الحالية بالنسخة المحفوظة.'))return;
+  createReportCheckpoint();
+  applyingCloudState=true;
+  writeManualWeeks(checkpoint.manualWeeks||{},{sync:false});
+  writeExcelRanges(checkpoint.excelRanges||{},{sync:false});
+  applyingCloudState=false;
+  activeManualWeekKey=selectedWeekKey();manualTrades=readManualWeeks()[activeManualWeekKey]||[];
+  trades=storedTradesForSelectedRange().map(t=>({...t}));importedWorkbookActive=trades.length>0;
+  renderManualTrades();render();showLivePreview();scheduleCloudSave();
+  showToast('تمت استعادة الصفقات');
+}
+function showReportCheckpoints(){
+  document.getElementById('reportCheckpointsModal')?.remove();
+  const list=readReportCheckpoints();
+  const overlay=document.createElement('div');overlay.id='reportCheckpointsModal';
+  overlay.style.cssText='position:fixed;inset:0;z-index:100001;background:#0009;display:grid;place-items:center;padding:16px;direction:rtl';
+  const dateFmt=new Intl.DateTimeFormat('ar-SA',{dateStyle:'medium',timeStyle:'short'});
+  const today=new Date(),todayLocal=new Date(today.getTime()-today.getTimezoneOffset()*60000).toISOString().slice(0,10);
+  overlay.innerHTML=`<section style="background:#fff9ed;color:#382b20;border:2px solid #cfaa62;border-radius:18px;padding:20px;width:min(520px,100%);max-height:80vh;overflow:auto;font-family:Cairo,Arial"><h3 style="margin-top:0">استعادة الصفقات حسب التاريخ</h3><p>اختاري تاريخًا للرجوع لآخر نقطة محفوظة في ذلك اليوم أو قبله.</p><label style="display:block;font-weight:700">تاريخ الاستعادة<input id="restoreThroughDate" type="date" value="${todayLocal}" style="display:block;width:100%;box-sizing:border-box;margin:8px 0 12px;padding:11px;font:inherit"></label><button type="button" data-restore-through-date style="width:100%;padding:12px;background:#b88026;color:#fff;border:0;border-radius:10px;font:700 16px Cairo,Arial">استعادة حتى هذا التاريخ</button><hr style="margin:18px 0;border-color:#dfc991"><b>أو اختاري نقطة محفوظة:</b>${list.length?list.map((cp,i)=>`<button type="button" data-restore-checkpoint="${cp.id}" style="display:block;width:100%;text-align:right;margin:8px 0;padding:12px;border:1px solid #d0af6a;border-radius:10px;background:${i===0?'#f9ebc9':'#fff'};font:600 15px Cairo,Arial;cursor:pointer">${dateFmt.format(new Date(cp.createdAt))} — استعادة هذه النسخة</button>`).join(''):'<p>ما فيه نقاط محفوظة للحين. تُنشأ نقطة تلقائيًا قبل التعديل أو الحذف القادم.</p>'}<button type="button" data-close-checkpoints style="margin-top:10px;padding:10px 20px">إغلاق</button></section>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click',e=>{
+    const restore=e.target.closest('[data-restore-checkpoint]');
+    if(restore){restoreReportCheckpoint(restore.dataset.restoreCheckpoint);overlay.remove();return}
+    if(e.target.closest('[data-restore-through-date]')){
+      const date=overlay.querySelector('#restoreThroughDate').value;
+      if(!date){showToast('اختاري تاريخ الاستعادة');return}
+      const cutoff=new Date(`${date}T23:59:59.999`).getTime();
+      const checkpoint=readReportCheckpoints().filter(cp=>cp.createdAt<=cutoff).sort((a,b)=>b.createdAt-a.createdAt)[0];
+      if(!checkpoint){showToast('ما فيه نقطة محفوظة في هذا التاريخ أو قبله');return}
+      restoreReportCheckpoint(checkpoint.id);overlay.remove();return;
+    }
+    if(e.target===overlay||e.target.closest('[data-close-checkpoints]'))overlay.remove();
+  });
+}
+function stylePreviewActionButtons(){
+  if(document.getElementById('previewActionStyle'))return;
+  const style=document.createElement('style');style.id='previewActionStyle';
+  style.textContent='.preview-actions{gap:8px!important;padding:10px!important}.preview-actions .preview-download{font-size:clamp(13px,2vw,18px)!important;padding:8px 13px!important;min-height:40px!important;border-radius:12px!important;background:linear-gradient(180deg,#ead7a9,#d4b877)!important;color:#493817!important;border:1px solid #b99a5b!important;box-shadow:0 2px 4px #70551e44!important;text-shadow:none!important}';document.head.appendChild(style);
+}
+function addReportCheckpointButton(){
+  const actions=$('previewDownload')?.parentElement;if(!actions||$('previewCheckpoints'))return;
+  stylePreviewActionButtons();
+  const button=document.createElement('button');button.id='previewCheckpoints';button.type='button';button.className='preview-download';button.textContent='نقاط الاستعادة';button.addEventListener('click',showReportCheckpoints);actions.appendChild(button);
+}
+addReportCheckpointButton();
 
 function selectedWeekKey(){
   const from=$('fromDate')?.value || currentWeekRange().from;
@@ -880,8 +945,9 @@ function buildShareTemplate(maxRows=10, captureId="shareCapture"){
         <td class="info-profit ${st.cls==='stopped'?'stopped-value':(t.profit>=0?'pos':'neg')}">${t.sell===null&&t.profit===0?'—':money(t.profit)}</td>
         <td class="info-pct ${st.cls==='stopped'?'stopped-value':(t.pct>=0?'pos':'neg')}">${t.sell===null&&t.profit===0?'—':pct(t.pct)}</td>
         <td><span class="info-status ${st.cls}" style="display:inline;background:transparent;border:0;border-radius:0;box-shadow:none;padding:0;font-size:27px;font-weight:900">${statusAr}</span></td>
+        ${captureId==='liveShareCapture'?`<td class="report-actions-cell" style="white-space:nowrap"><button type="button" data-report-edit="${encodeURIComponent(tradeStorageSignature(t))}" aria-label="تعديل الصفقة" style="background:#d7a43d;color:#241608;border:1px solid #9b6a1d;border-radius:8px;padding:10px 14px;font:700 30px Cairo,Arial;cursor:pointer">✏️ تعديل</button> <button type="button" data-report-delete="${encodeURIComponent(tradeStorageSignature(t))}" aria-label="حذف الصفقة" style="background:#c83f37;color:white;border:1px solid #922720;border-radius:8px;padding:10px 14px;font:700 30px Cairo,Arial;cursor:pointer">🗑 حذف</button></td>`:''}
       </tr>`;
-  }).join('') : `<tr><td colspan="8">لا توجد صفقات ضمن الفترة المحددة</td></tr>`;
+  }).join('') : `<tr><td colspan="${captureId==='liveShareCapture'?9:8}">لا توجد صفقات ضمن الفترة المحددة</td></tr>`;
 
   return `
     <div class="infographic-card refined-light" id="${captureId}">
@@ -985,7 +1051,8 @@ function buildShareTemplate(maxRows=10, captureId="shareCapture"){
           </div>
           <div class="table-week-date table-head-box"><span class="week-date-icon">📅</span><span>${periodText}</span></div>
         </div>
-        <table class="info-table roomy">
+        ${captureId==='liveShareCapture'?'<div class="report-table-scroll" style="max-width:100%;overflow-x:auto;overflow-y:visible;-webkit-overflow-scrolling:touch;touch-action:pan-x pan-y;overscroll-behavior-x:contain;border-radius:10px"><div style="padding:5px 10px;text-align:center;color:#806637;font:600 17px Cairo,Arial">اسحبي الجدول يمينًا ويسارًا لرؤية كل الأعمدة وأزرار التعديل والحذف</div>':''}
+        <table class="info-table roomy" ${captureId==='liveShareCapture'?'style="width:2100px!important;min-width:2100px!important;max-width:none!important;table-layout:fixed!important"':''}>
           <thead>
             <tr>
               <th>الرمز</th>
@@ -996,10 +1063,12 @@ function buildShareTemplate(maxRows=10, captureId="shareCapture"){
               <th>الربح</th>
               <th>النسبة</th>
               <th>الحالة</th>
+              ${captureId==='liveShareCapture'?'<th>الإجراءات</th>':''}
             </tr>
           </thead>
           <tbody>${rows}</tbody>
         </table>
+        ${captureId==='liveShareCapture'?'</div>':''}
       </div>
 
       <div class="report-footer-note footer-only">
@@ -1270,11 +1339,43 @@ async function saveOrShareTopTrades(e){
     }
 
     const captureWidth=REPORT_WIDTH;
-    const captureHeight=Math.ceil(Math.max(target.scrollHeight,target.getBoundingClientRect().height));
-    // دقة أعلى للصورة النهائية لتبقى الكتابة واضحة بعد ضغط تطبيقات المراسلة.
-    // نستخدم 3x عادة، مع تخفيض تلقائي فقط للتقارير الطويلة حمايةً لذاكرة Safari.
-    const maxCanvasPixels=32_000_000;
-    const scale=Math.max(2.25,Math.min(3,Math.sqrt(maxCanvasPixels/(captureWidth*captureHeight))));
+    const captureHeight=Math.ceil(Math.max(
+      target.scrollHeight,
+      target.offsetHeight,
+      target.getBoundingClientRect().height
+    ));
+
+    // إصلاح قص الصفقات في تقارير 4 أسابيع على Safari / iPhone.
+    // المشكلة كانت أن الحد الأدنى 2.25x قد يجعل ارتفاع الـCanvas
+    // أكبر من الحد الذي يستطيع Safari إنشاءه، فيُقص الجزء السفلي من التقرير.
+    // نختار أعلى دقة ممكنة مع مراعاة عدد البكسلات والبعد الأقصى للـCanvas.
+    const MAX_CANVAS_PIXELS = 24_000_000;
+    const MAX_CANVAS_DIMENSION = 15_500;
+    const MIN_EXPORT_SCALE = 1.25;
+    const MAX_EXPORT_SCALE = 3;
+
+    const pixelScale = Math.sqrt(
+      MAX_CANVAS_PIXELS / (captureWidth * captureHeight)
+    );
+    const dimensionScale =
+      MAX_CANVAS_DIMENSION / Math.max(captureWidth, captureHeight);
+
+    const scale = Math.max(
+      MIN_EXPORT_SCALE,
+      Math.min(MAX_EXPORT_SCALE, pixelScale, dimensionScale)
+    );
+
+    const outputWidth = Math.ceil(captureWidth * scale);
+    const outputHeight = Math.ceil(captureHeight * scale);
+
+    console.info('Q Options image export', {
+      captureWidth,
+      captureHeight,
+      scale,
+      outputWidth,
+      outputHeight
+    });
+
     const canvas=await html2canvas(target,{
       scale,
       width:captureWidth,
@@ -1597,3 +1698,129 @@ initSharedCloud();
 
 // Q OPTIONS FINAL READY — live preview + iOS save
 console.log('Q OPTIONS BUILD v7.1 LIVE PREVIEW');
+
+
+// تنزيل جميع صفقات الفترة المختارة من معاينة التقرير.
+async function exportReportTradesToExcel(){
+  const data=getFilteredTrades();
+  if(!data.length){showToast('لا توجد صفقات في الفترة المختارة');return}
+  if(!window.ExcelJS){showToast('تعذر تحميل منسق Excel');return}
+  const btn=$('previewExcel');
+  if(btn) btn.disabled=true;
+  try{
+    const order={win:0,stopped:1,loss:2,flat:3,open:4};
+    const rows=[...data].sort((a,b)=>(order[tradeOutcome(a)]??9)-(order[tradeOutcome(b)]??9)||(a.date||'').localeCompare(b.date||'')||String(a.symbol).localeCompare(String(b.symbol)));
+    const workbook=new ExcelJS.Workbook();
+    workbook.creator='Q Options';
+    workbook.calcProperties.fullCalcOnLoad=true;
+    const sheet=workbook.addWorksheet('تقرير الصفقات',{views:[{rightToLeft:true,state:'frozen',ySplit:6}],pageSetup:{orientation:'landscape',paperSize:9,fitToPage:true,fitToWidth:1,fitToHeight:0}});
+    sheet.columns=[16,13,14,16,16,18,16,16,17,32].map(width=>({width}));
+    const font={name:'Cairo',size:12,bold:true,color:{argb:'FF30261B'}};
+    const border={style:'thin',color:{argb:'FFD8BE87'}};
+    const band=(row,text)=>{sheet.mergeCells(`A${row}:J${row}`);const c=sheet.getCell(`A${row}`);c.value=text;c.font={...font,size:row===1?22:13};c.alignment={horizontal:'center',vertical:'middle',wrapText:true};c.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FFF2D99D'}};sheet.getRow(row).height=row===1?44:30;};
+    band(1,'Q OPTIONS — تقرير الصفقات');
+    band(2,`الفترة: ${$('fromDate').value||'—'} → ${$('toDate').value||'—'}`);
+    sheet.getCell('A4').value='الأرباح';
+    sheet.mergeCells('B4:C4');
+    sheet.getCell('E4').value='عدد الصفقات';sheet.getCell('F4').value=rows.length;
+    sheet.getRow(4).height=34;
+    const headers=['الرمز','الخيار','السترايك','سعر الشراء','سعر البيع','الربح','النسبة','الحالة','التاريخ','الملاحظات'];
+    headers.forEach((h,i)=>sheet.getCell(6,i+1).value=h);
+    sheet.getRow(6).height=34;
+    rows.forEach((t,i)=>{
+      const n=i+7,open=tradeOutcome(t)==='open';
+      const buy=Number(t.buy)||0,sell=open?null:Number(t.sell)||0;
+      const profit=open?0:(sell-buy)*100;
+      const row=sheet.getRow(n);
+      row.values=[String(t.symbol||''),t.option||'',String(t.strike??''),buy,sell,
+        {formula:`IF(OR(D${n}="",E${n}=""),"",(E${n}-D${n})*100)`,result:open?'':profit},
+        {formula:`IF(OR(D${n}="",D${n}=0,E${n}=""),"",(E${n}-D${n})/D${n})`,result:open||!buy?'':(sell-buy)/buy},
+        {formula:`IF(E${n}="","مفتوحة",IF(E${n}>D${n},"ربح",IF(AND(E${n}=0,D${n}>0),"خسارة",IF(E${n}<D${n},"موقوفة","متعادل"))))`,result:({win:"ربح",loss:"خسارة",stopped:"موقوفة",open:"مفتوحة",flat:"متعادل"})[tradeOutcome(t)]},
+        /^\d{4}-\d{2}-\d{2}$/.test(t.date||'')?new Date(t.date+'T00:00:00Z'):t.date||'',String(t.notes||'')];
+      row.height=32;
+      for(let c=1;c<=10;c++){
+        const cell=row.getCell(c);
+        cell.font={...font};cell.alignment={horizontal:'center',vertical:'middle',wrapText:true};
+        cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:i%2?'FFF7F0E5':'FFFFFFFF'}};
+        cell.border={top:border,bottom:border,left:border,right:border};
+      }
+      [4,5,6].forEach(c=>row.getCell(c).numFmt='"$"#,##0.00;−"$"#,##0.00');
+      row.getCell(7).numFmt='0.00%;−0.00%';row.getCell(9).numFmt='yyyy-mm-dd';
+    });
+    const end=rows.length+6;
+    sheet.getCell('B4').value={formula:`SUM(F7:F${end})`,result:rows.reduce((sum,t)=>sum+(tradeOutcome(t)==='open'?0:((Number(t.sell)||0)-(Number(t.buy)||0))*100),0)};
+    sheet.getCell('B4').numFmt='"$"#,##0.00;−"$"#,##0.00';
+    [4,6].forEach(n=>sheet.getRow(n).eachCell(cell=>{cell.font={...font,size:n===4?16:13};cell.alignment={horizontal:'center',vertical:'middle',wrapText:true};cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FFF2D99D'}};cell.border={top:border,bottom:border,left:border,right:border};}));
+    for(const [label,color] of [['ربح','FF238247'],['موقوفة','FF138DA4'],['خسارة','FFC43C35'],['مفتوحة','FFB48630']]){
+      sheet.addConditionalFormatting({ref:`F7:H${end}`,rules:[{type:'expression',formulae:[`$H7="${label}"`],style:{font:{color:{argb:color},bold:true}}}]});
+    }
+    sheet.autoFilter=`A6:J${end}`;
+    sheet.pageSetup.printTitlesRow='1:6';
+    band(end+2,'الأرباح لكل عقد = (سعر البيع − سعر الشراء) × 100. إجمالي الأرباح يشمل خصم الخسائر.');
+    const buffer=await workbook.xlsx.writeBuffer();
+    const blob=new Blob([buffer],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+    const url=URL.createObjectURL(blob),link=document.createElement('a');
+    link.href=url;link.download=`Q-Options-Report-${safeFileRange()}.xlsx`;
+    document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);
+    showToast(`تم تنزيل ${rows.length} صفقة بمعادلات الأرباح`);
+  }catch(err){console.error(err);showToast('تعذر تنزيل تقرير Excel')}
+  finally{if(btn)btn.disabled=false;}
+}
+function addReportExcelButton(){
+  const imageButton=$('previewDownload');
+  if(!imageButton || $('previewExcel'))return;
+  stylePreviewActionButtons();
+  const button=document.createElement('button');
+  button.id='previewExcel';button.type='button';button.className=imageButton.className;button.textContent='تنزيل ملف إكسل';
+  imageButton.insertAdjacentElement('afterend',button);
+  const actions=imageButton.parentElement;
+  actions.style.setProperty('display','flex');actions.style.setProperty('gap','10px');actions.style.setProperty('flex-wrap','wrap');actions.style.setProperty('justify-content','center');
+  button.addEventListener('click',exportReportTradesToExcel);
+}
+addReportExcelButton();
+
+function commitReportTradeChange(original,replacement){
+  const signature=tradeStorageSignature(original);
+  let found=false;
+  for(const [read,write] of [[readManualWeeks,writeManualWeeks],[readExcelRanges,writeExcelRanges]]){
+    const groups=read();let changed=false;
+    for(const key of Object.keys(groups)){
+      if(!Array.isArray(groups[key]))continue;
+      groups[key]=groups[key].flatMap(t=>{
+        if(tradeStorageSignature(t)!==signature)return [t];
+        changed=true;found=true;return replacement?[{...replacement}]:[];
+      });
+    }
+    if(changed)write(groups);
+  }
+  trades=trades.flatMap(t=>tradeStorageSignature(t)===signature?(replacement?[{...replacement}]:[]):[t]);
+  if(!found && replacement){
+    const groups=readExcelRanges(),key=selectedWeekKey();
+    groups[key]=mergeTradesWithoutDuplicates(groups[key]||[],[replacement]);writeExcelRanges(groups);
+  }
+  manualTrades=readManualWeeks()[activeManualWeekKey]||[];
+  renderManualTrades();render();showLivePreview();
+}
+function openReportTradeEditor(trade){
+  document.getElementById('reportTradeEditor')?.remove();
+  const overlay=document.createElement('div');overlay.id='reportTradeEditor';
+  overlay.style.cssText='position:fixed;inset:0;z-index:100000;background:#0008;display:grid;place-items:center;padding:16px;direction:rtl';
+  overlay.innerHTML=`<form style="background:#fff9ed;color:#382b20;border:2px solid #cfaa62;border-radius:18px;padding:22px;width:min(440px,100%);max-height:85vh;overflow:auto;font-family:Cairo,Arial"><h3>تعديل الصفقة</h3>${[
+    ['symbol','الرمز','text'],['strike','السترايك','text'],['buy','سعر الشراء','number'],['sell','سعر البيع (فارغ للمفتوحة)','number'],['date','التاريخ','date'],['notes','الملاحظات','text']
+  ].map(([key,label,type])=>`<label style="display:block;margin:10px 0">${label}<input name="${key}" type="${type}" ${type==='number'?'step="any" min="0"':''} ${key==='symbol'||key==='buy'?'required':''} value="${escapeHtml(trade[key]??'')}" style="display:block;box-sizing:border-box;width:100%;padding:10px;font:inherit"></label>`).join('')}<label>الخيار<select name="option" style="display:block;width:100%;padding:10px;font:inherit"><option value="Call">Call</option><option value="Put">Put</option></select></label><div style="display:flex;gap:12px;margin-top:18px"><button type="submit">حفظ التعديل</button><button type="button" id="reportEditCancel">إلغاء</button></div></form>`;
+  document.body.appendChild(overlay);
+  const form=overlay.querySelector('form');form.elements.option.value=String(trade.option||'').toLowerCase()==='put'?'Put':'Call';
+  overlay.querySelector('#reportEditCancel').onclick=()=>overlay.remove();
+  form.onsubmit=e=>{
+    e.preventDefault();const fields=new FormData(form),buy=Number(fields.get('buy')),rawSell=String(fields.get('sell')).trim(),sell=rawSell===''?null:Number(rawSell);
+    const updated={...trade,symbol:String(fields.get('symbol')).trim().toUpperCase(),strike:String(fields.get('strike')).trim(),buy,sell,date:String(fields.get('date')),option:String(fields.get('option')),notes:String(fields.get('notes')),profit:sell===null?0:(sell-buy)*100,pct:sell===null||!buy?0:(sell-buy)/buy*100};
+    commitReportTradeChange(trade,updated);overlay.remove();showToast('تم حفظ التعديل وتحديث الأرباح');
+  };
+}
+$('previewContent')?.addEventListener('click',e=>{
+  const button=e.target.closest('[data-report-edit],[data-report-delete]');if(!button)return;
+  const signature=decodeURIComponent(button.dataset.reportEdit||button.dataset.reportDelete);
+  const trade=trades.find(t=>tradeStorageSignature(t)===signature);if(!trade)return;
+  if(button.hasAttribute('data-report-edit'))openReportTradeEditor(trade);
+  else if(confirm(`حذف صفقة ${trade.symbol}؟`)){commitReportTradeChange(trade,null);showToast('تم حذف الصفقة وتحديث الأرباح');}
+});
